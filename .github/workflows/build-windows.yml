@@ -11,6 +11,7 @@ on:
       - "app.py"
       - "cli.py"
       - "exporter_core.py"
+      - "merge_highlights.py"
       - "preview.py"
       - "wechat_data_dirs.py"
       - "tests/**"
@@ -27,6 +28,7 @@ on:
       - "app.py"
       - "cli.py"
       - "exporter_core.py"
+      - "merge_highlights.py"
       - "preview.py"
       - "wechat_data_dirs.py"
       - "tests/**"
@@ -142,7 +144,7 @@ jobs:
       - name: Syntax check
         shell: pwsh
         run: |
-          python -m py_compile app.py cli.py exporter_core.py preview.py wechat_data_dirs.py
+          python -m py_compile app.py cli.py exporter_core.py merge_highlights.py preview.py wechat_data_dirs.py
 
       - name: Unit tests
         shell: pwsh

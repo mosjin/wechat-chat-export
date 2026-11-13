@@ -16,6 +16,11 @@ from exporter_core import (
     parse_sender_list,
     validate_topic_gap_minutes,
 )
+from merge_highlights import (
+    merge_highlights_by_person,
+    merge_highlights_by_topic,
+    parse_merge_list,
+)
 
 
 if __name__ == "__main__":
@@ -159,6 +164,35 @@ if __name__ == "__main__":
             "优先入选精华候选；指定后自动开启 --highlights"
         ),
     )
+    p.add_argument(
+        "--merge-person",
+        action="append",
+        default=None,
+        metavar="人名",
+        help=(
+            "精华合并（后处理，不连接微信）：扫描 --exports-root 下各会话的"
+            " highlights/ 精华候选，把这些人发起、参与或独白的话题段跨群"
+            "跨日期合并到 merged/person_<人名>.md / .json 并附提示词；"
+            "可重复使用，也可用逗号/分号分隔多人；指定后忽略导出参数"
+        ),
+    )
+    p.add_argument(
+        "--merge-topic",
+        action="append",
+        default=None,
+        metavar="关键词",
+        help=(
+            "精华合并（后处理，不连接微信）：用关键词在各会话精华候选里"
+            "本地预筛话题段（命中位置有标注），合并到 "
+            "merged/topic_<关键词>.md / .json 并附提示词，相关性由大模型"
+            "复核；可重复使用，也可用逗号/分号分隔多个；指定后忽略导出参数"
+        ),
+    )
+    p.add_argument(
+        "--exports-root",
+        default="exports",
+        help="精华合并扫描的导出根目录（配合 --merge-person / --merge-topic 使用，默认 exports）",
+    )
     a = p.parse_args()
 
     if a.limit is not None and a.limit <= 0:
@@ -221,6 +255,43 @@ if __name__ == "__main__":
             print(group["name"])
         print(f"共 {len(groups)} 个可可靠识别的群聊。", file=sys.stderr)
         raise SystemExit(0)
+    merge_persons = parse_merge_list(a.merge_person)
+    merge_topics = parse_merge_list(a.merge_topic)
+    if merge_persons or merge_topics:
+        if a.name or a.export_all:
+            print("注意：已指定精华合并，忽略其他导出参数。")
+        try:
+            reports = []
+            if merge_persons:
+                reports.append(
+                    merge_highlights_by_person(
+                        a.exports_root, merge_persons, progress=print
+                    )
+                )
+            if merge_topics:
+                reports.append(
+                    merge_highlights_by_topic(
+                        a.exports_root, merge_topics, progress=print
+                    )
+                )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1)
+        for report in reports:
+            for skipped in report["skipped_sessions"]:
+                print(
+                    f"已跳过会话 {skipped['folder']}：{skipped['reason']}",
+                    file=sys.stderr,
+                )
+            for output in report["outputs"]:
+                print(
+                    f"合并完成：{output['segment_total']} 段、"
+                    f"{output['message_total']} 条消息。"
+                )
+                print("Markdown：" + output["md"])
+                print("JSON：" + output["json"])
+                print("提示词：" + output["prompt"])
+        raise SystemExit(0)
     if a.export_all:
         if a.name:
             print(f"注意：已指定 --all，忽略会话关键词“{a.name}”。")
@@ -267,6 +338,7 @@ if __name__ == "__main__":
         p.error(
             "请提供好友备注/昵称或群名（多个可用 ; 分隔）；"
             "或用 --all 导出全部聊天；或用 --list-groups 列出群聊；"
+            "或用 --merge-person / --merge-topic 合并已有精华候选；"
             "或使用 --install-asr / --install-rust-silk / "
             "--clear-sensitive-cache"
         )
