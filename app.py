@@ -17,9 +17,12 @@ from exporter_core import (
     clear_sensitive_cache,
     export_all_chats,
     export_chat,
+    export_chats,
     install_local_asr_model,
     install_rust_silk,
+    list_group_chats,
     local_asr_status,
+    parse_name_list,
     rust_silk_status,
 )
 from preview import open_chat_preview
@@ -27,6 +30,8 @@ from wechat_data_dirs import choose_wechat_data_dir
 
 APP_TITLE = "微信聊天导出给大模型"
 WECHAT_PROCESS_NAMES = {"weixin.exe", "wechat.exe"}
+GROUP_CHECKED_MARK = "☑"
+GROUP_UNCHECKED_MARK = "☐"
 
 # 与 EXE 文件图标使用同一套图形。
 WINDOW_ICON_PNG_BASE64 = """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"""
@@ -93,7 +98,7 @@ class App(tk.Tk):
 
         ttk.Label(
             pad,
-            text="支持私聊与群聊。输入准确备注名、昵称或群名；程序会自动识别。",
+            text="支持私聊与群聊。输入准确备注名、昵称或群名；多个用 ; 分隔可一次导出，也可点“群列表选择”勾选群聊。",
         ).grid(row=2, column=0, sticky="w", pady=(2, 16))
 
         row = ttk.Frame(pad)
@@ -115,6 +120,13 @@ class App(tk.Tk):
             command=self.start_export_all,
         )
         self.export_all_btn.grid(row=0, column=3, padx=(8, 0))
+
+        self.group_btn = ttk.Button(
+            row,
+            text="群列表选择",
+            command=self.choose_groups,
+        )
+        self.group_btn.grid(row=0, column=4, padx=(8, 0))
 
         outrow = ttk.Frame(pad)
         outrow.grid(row=4, column=0, sticky="ew", pady=(12, 8))
@@ -306,6 +318,168 @@ class App(tk.Tk):
         if path:
             self.out_var.set(path)
 
+    def choose_groups(self):
+        """群列表选择：后台读取本机群聊，勾选后以 ; 填回输入框。"""
+        if not is_wechat_running():
+            self._warn_wechat_not_running()
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("群列表选择")
+        dialog.geometry("580x540")
+        dialog.minsize(460, 420)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        state = {"groups": [], "checked": set(), "loaded": False}
+        local_q: queue.Queue = queue.Queue()
+
+        ttk.Label(
+            dialog,
+            text="点击一行勾选 / 取消勾选；确定后，所选群名会填回“好友 / 群聊”输入框。",
+        ).pack(side="top", fill="x", padx=12, pady=(12, 4))
+
+        filter_row = ttk.Frame(dialog)
+        filter_row.pack(side="top", fill="x", padx=12, pady=(0, 6))
+        ttk.Label(filter_row, text="筛选：").pack(side="left")
+        filter_var = tk.StringVar()
+        ttk.Entry(filter_row, textvariable=filter_var).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        status_var = tk.StringVar(value="正在读取本机群列表…")
+        ttk.Label(dialog, textvariable=status_var).pack(
+            side="top", fill="x", padx=12, pady=(0, 6)
+        )
+
+        tree = ttk.Treeview(
+            dialog,
+            columns=("check", "name", "last"),
+            show="headings",
+            selectmode="browse",
+        )
+        tree.heading("check", text="选")
+        tree.heading("name", text="群名")
+        tree.heading("last", text="最近消息")
+        tree.column("check", width=40, anchor="center", stretch=False)
+        tree.column("name", width=340)
+        tree.column("last", width=150, stretch=False)
+        tree.pack(side="top", fill="both", expand=True, padx=12)
+
+        def visible_groups():
+            needle = filter_var.get().strip().casefold()
+            if not needle:
+                return state["groups"]
+            return [
+                g for g in state["groups"] if needle in g["name"].casefold()
+            ]
+
+        def render():
+            for iid in tree.get_children():
+                tree.delete(iid)
+            for group in visible_groups():
+                mark = (
+                    GROUP_CHECKED_MARK
+                    if group["username"] in state["checked"]
+                    else GROUP_UNCHECKED_MARK
+                )
+                tree.insert(
+                    "",
+                    "end",
+                    iid=group["username"],
+                    values=(mark, group["name"], group["last_time_text"] or "—"),
+                )
+            if state["loaded"]:
+                status_var.set(
+                    f"共 {len(state['groups'])} 个群，"
+                    f"当前显示 {len(visible_groups())} 个，"
+                    f"已选 {len(state['checked'])} 个。"
+                )
+
+        def on_click(event):
+            iid = tree.identify_row(event.y)
+            if not iid:
+                return
+            if iid in state["checked"]:
+                state["checked"].discard(iid)
+            else:
+                state["checked"].add(iid)
+            render()
+
+        tree.bind("<ButtonRelease-1>", on_click)
+        filter_var.trace_add("write", lambda *_: render())
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(side="bottom", fill="x", padx=12, pady=12)
+
+        def select_all_visible():
+            for group in visible_groups():
+                state["checked"].add(group["username"])
+            render()
+
+        def clear_checked():
+            state["checked"].clear()
+            render()
+
+        def confirm():
+            selected_names = [
+                g["name"]
+                for g in state["groups"]
+                if g["username"] in state["checked"]
+            ]
+            merged = parse_name_list([self.name_var.get(), *selected_names])
+            self.name_var.set(";".join(merged))
+            self.log(
+                f"已从群列表选择 {len(selected_names)} 个群，填回输入框。"
+            )
+            dialog.destroy()
+
+        ttk.Button(btn_row, text="全选（当前显示）", command=select_all_visible).pack(side="left")
+        ttk.Button(btn_row, text="清空勾选", command=clear_checked).pack(side="left", padx=(8, 0))
+        ttk.Button(btn_row, text="取消", command=dialog.destroy).pack(side="right")
+        confirm_btn = ttk.Button(
+            btn_row, text="确定", command=confirm, state="disabled"
+        )
+        confirm_btn.pack(side="right", padx=(0, 8))
+
+        def load_worker():
+            try:
+                groups = list_group_chats(
+                    db_dir=self.db_dir_var.get().strip() or None,
+                    progress=lambda m: local_q.put(("log", m)),
+                )
+                local_q.put(("groups", groups))
+            except Exception as exc:
+                local_q.put(("error", f"{type(exc).__name__}: {exc}"))
+
+        def poll_local():
+            if not dialog.winfo_exists():
+                return
+            try:
+                while True:
+                    kind, payload = local_q.get_nowait()
+                    if kind == "log":
+                        status_var.set(str(payload))
+                    elif kind == "groups":
+                        state["groups"] = payload
+                        state["loaded"] = True
+                        confirm_btn.configure(state="normal")
+                        render()
+                    elif kind == "error":
+                        status_var.set("读取群列表失败。")
+                        messagebox.showerror(
+                            APP_TITLE,
+                            "读取群列表失败：\n\n" + payload,
+                            parent=dialog,
+                        )
+            except queue.Empty:
+                pass
+            if dialog.winfo_exists():
+                dialog.after(100, poll_local)
+
+        threading.Thread(target=load_worker, daemon=True).start()
+        dialog.after(100, poll_local)
+
     def log(self, msg):
         self.status.configure(state="normal")
         self.status.insert("end", str(msg) + "\n")
@@ -315,6 +489,7 @@ class App(tk.Tk):
     def _set_export_buttons(self, state):
         self.export_btn.configure(state=state)
         self.export_all_btn.configure(state=state)
+        self.group_btn.configure(state=state)
 
     def _warn_wechat_not_running(self):
         self.log("未检测到正在运行的 Windows 微信。")
@@ -396,9 +571,12 @@ class App(tk.Tk):
         self.log("")
 
     def start_export(self):
-        name = self.name_var.get().strip()
-        if not name:
-            messagebox.showwarning(APP_TITLE, "请输入好友备注名、昵称或群名。")
+        names = parse_name_list(self.name_var.get())
+        if not names:
+            messagebox.showwarning(
+                APP_TITLE,
+                "请输入好友备注名、昵称或群名（多个可用 ; 分隔）。",
+            )
             return
 
         if not is_wechat_running():
@@ -414,22 +592,30 @@ class App(tk.Tk):
             return
 
         self._begin_export()
-        self.log(f"开始导出：{name}")
-
-        thread = threading.Thread(
-            target=self.worker,
-            args=(
-                name,
-                self.out_var.get().strip() or str(app_dir() / "exports"),
-                self.images_var.get(),
-                self.files_var.get(),
-                self.voices_var.get(),
-                self.videos_var.get(),
-                transcribe_voices,
-                self.db_dir_var.get().strip() or None,
-            ),
-            daemon=True,
+        outdir = self.out_var.get().strip() or str(app_dir() / "exports")
+        common_args = (
+            outdir,
+            self.images_var.get(),
+            self.files_var.get(),
+            self.voices_var.get(),
+            self.videos_var.get(),
+            transcribe_voices,
+            self.db_dir_var.get().strip() or None,
         )
+        if len(names) == 1:
+            self.log(f"开始导出：{names[0]}")
+            thread = threading.Thread(
+                target=self.worker,
+                args=(names[0], *common_args),
+                daemon=True,
+            )
+        else:
+            self.log(f"开始批量导出：{len(names)} 个会话（{';'.join(names)}）")
+            thread = threading.Thread(
+                target=self.worker_multi,
+                args=(names, *common_args),
+                daemon=True,
+            )
         thread.start()
 
     def start_export_all(self):
@@ -519,6 +705,33 @@ class App(tk.Tk):
         except Exception as e:
             self.q.put(("error", f"{type(e).__name__}: {e}"))
 
+    def worker_multi(
+        self,
+        names,
+        outdir,
+        export_images,
+        export_files,
+        export_voices,
+        export_videos,
+        transcribe_voices,
+        db_dir,
+    ):
+        try:
+            result = export_chats(
+                names,
+                outdir,
+                progress=lambda m: self.q.put(("log", m)),
+                export_images=export_images,
+                export_files=export_files,
+                export_voices=export_voices,
+                export_videos=export_videos,
+                transcribe_voices=transcribe_voices,
+                db_dir=db_dir,
+            )
+            self.q.put(("multi_done", result))
+        except Exception as e:
+            self.q.put(("error", f"{type(e).__name__}: {e}"))
+
     def worker_all(
         self,
         outdir,
@@ -556,6 +769,7 @@ class App(tk.Tk):
                     self.log(f"输出：{payload['output_dir']}")
                     self.export_btn.configure(state="normal")
                     self.export_all_btn.configure(state="normal")
+                    self.group_btn.configure(state="normal")
                     self.clear_cache_btn.configure(state="normal")
                     self.open_btn.configure(state="normal")
                     self.preview_btn.configure(state="normal")
@@ -601,6 +815,52 @@ class App(tk.Tk):
                         f"会话：{payload['chat_name']}"
                         f"{media_line}\n\n"
                         "已生成 TXT、Markdown 和 JSON。"
+                        f"{cleanup_note}",
+                    )
+                elif kind == "multi_done":
+                    self.last_output = payload["output_dir"]
+                    self.last_result = None
+                    self.log(f"输出：{payload['output_dir']}")
+                    self._set_export_buttons("normal")
+                    self.clear_cache_btn.configure(state="normal")
+                    self.open_btn.configure(state="normal")
+                    self.preview_btn.configure(state="disabled")
+
+                    cleanup_ok = payload.get("sensitive_cache_cleanup", True)
+                    cleanup_error = payload.get("sensitive_cache_cleanup_error")
+                    cleanup_note = (
+                        ""
+                        if cleanup_ok
+                        else (
+                            "\n\n⚠ 敏感临时缓存自动清理失败。"
+                            "\n请点击“清除敏感缓存”重试。"
+                            + (f"\n详细信息：{cleanup_error}" if cleanup_error else "")
+                        )
+                    )
+                    failed_names = [
+                        item["input_name"]
+                        for item in payload.get("chats", [])
+                        if item.get("status") == "failed"
+                    ]
+                    failed_note = (
+                        "\n失败：" + "、".join(failed_names) if failed_names else ""
+                    )
+                    show_result = (
+                        messagebox.showinfo
+                        if cleanup_ok
+                        else messagebox.showwarning
+                    )
+                    show_result(
+                        APP_TITLE,
+                        "批量导出完成。\n\n"
+                        f"本次处理：{payload['selected_total']}\n"
+                        f"成功：{payload['exported']}\n"
+                        f"无消息：{payload['skipped_empty']}\n"
+                        f"失败：{payload['failed']}\n"
+                        f"重复跳过：{payload['duplicates']}\n"
+                        f"消息总数：{payload['total_messages']}"
+                        f"{failed_note}\n\n"
+                        f"总索引：\n{payload['index_md']}"
                         f"{cleanup_note}",
                     )
                 elif kind == "all_done":
@@ -723,6 +983,7 @@ class App(tk.Tk):
                 elif kind == "error":
                     self.export_btn.configure(state="normal")
                     self.export_all_btn.configure(state="normal")
+                    self.group_btn.configure(state="normal")
                     self.clear_cache_btn.configure(state="normal")
                     self.log("导出失败：" + payload)
                     messagebox.showerror(
