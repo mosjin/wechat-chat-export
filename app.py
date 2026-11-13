@@ -22,6 +22,7 @@ from exporter_core import (
     install_rust_silk,
     list_group_chats,
     local_asr_status,
+    parse_export_date,
     parse_name_list,
     rust_silk_status,
 )
@@ -81,7 +82,7 @@ class App(tk.Tk):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
         pad.grid_columnconfigure(0, weight=1)
-        pad.grid_rowconfigure(9, weight=1)
+        pad.grid_rowconfigure(10, weight=1)
 
         ttk.Label(
             pad,
@@ -191,7 +192,41 @@ class App(tk.Tk):
             text="仅导出本机仍有缓存的附件；“语音转文字（本地）”默认关闭，勾选后会自动同时导出语音。",
         ).grid(row=7, column=0, sticky="w", pady=(2, 4))
 
-        ttk.Separator(pad).grid(row=8, column=0, sticky="ew", pady=10)
+        sender_frame = ttk.Frame(pad)
+        sender_frame.grid(row=8, column=0, sticky="ew", pady=(2, 2))
+
+        sender_line = ttk.Frame(sender_frame)
+        sender_line.pack(side="top", fill="x")
+
+        self.by_sender_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            sender_line, text="按人分组导出", variable=self.by_sender_var
+        ).pack(side="left")
+
+        ttk.Label(sender_line, text="只看这些人：").pack(side="left", padx=(10, 0))
+        self.sender_filter_var = tk.StringVar()
+        ttk.Entry(sender_line, textvariable=self.sender_filter_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
+        )
+
+        ttk.Label(sender_line, text="从：").pack(side="left")
+        self.date_from_var = tk.StringVar()
+        ttk.Entry(sender_line, textvariable=self.date_from_var, width=12).pack(
+            side="left", padx=(4, 8)
+        )
+        ttk.Label(sender_line, text="到：").pack(side="left")
+        self.date_to_var = tk.StringVar()
+        ttk.Entry(sender_line, textvariable=self.date_to_var, width=12).pack(
+            side="left", padx=(4, 0)
+        )
+
+        ttk.Label(
+            sender_frame,
+            text="在会话目录下生成 by_sender/ 子目录：每人一份文件（内按自然日分段）。“只看这些人”可填多个人名、用逗号分隔；日期格式 YYYY-MM-DD，可留空；填了人名或日期即自动开启按人分组。",
+            foreground="#6b7280",
+        ).pack(side="top", anchor="w", pady=(2, 0))
+
+        ttk.Separator(pad).grid(row=9, column=0, sticky="ew", pady=10)
 
         self.status = tk.Text(
             pad,
@@ -199,10 +234,10 @@ class App(tk.Tk):
             wrap="word",
             state="disabled",
         )
-        self.status.grid(row=9, column=0, sticky="nsew")
+        self.status.grid(row=10, column=0, sticky="nsew")
 
         bottom = ttk.Frame(pad)
-        bottom.grid(row=10, column=0, sticky="ew", pady=(10, 0))
+        bottom.grid(row=11, column=0, sticky="ew", pady=(10, 0))
         bottom.grid_columnconfigure(0, weight=1)
 
         self.clear_cache_btn = ttk.Button(
@@ -570,6 +605,28 @@ class App(tk.Tk):
         self.last_result = None
         self.log("")
 
+    def _by_sender_args(self):
+        """读取按人分组选项；日期非法时返回 None 并弹窗提示。"""
+        sender_filter = self.sender_filter_var.get().strip()
+        try:
+            date_from = parse_export_date(
+                self.date_from_var.get(), "起始日期"
+            )
+            date_to = parse_export_date(self.date_to_var.get(), "结束日期")
+        except ValueError as exc:
+            messagebox.showwarning(APP_TITLE, str(exc))
+            return None
+        if date_from and date_to and date_from > date_to:
+            messagebox.showwarning(
+                APP_TITLE,
+                f"起始日期 {date_from} 晚于结束日期 {date_to}。",
+            )
+            return None
+        by_sender = bool(
+            self.by_sender_var.get() or sender_filter or date_from or date_to
+        )
+        return (by_sender, sender_filter or None, date_from, date_to)
+
     def start_export(self):
         names = parse_name_list(self.name_var.get())
         if not names:
@@ -587,6 +644,10 @@ class App(tk.Tk):
         if transcribe_voices:
             self.voices_var.set(True)
 
+        by_sender_args = self._by_sender_args()
+        if by_sender_args is None:
+            return
+
         self.pending_all = False
         if not self._check_media_ready(transcribe_voices):
             return
@@ -601,6 +662,7 @@ class App(tk.Tk):
             self.videos_var.get(),
             transcribe_voices,
             self.db_dir_var.get().strip() or None,
+            *by_sender_args,
         )
         if len(names) == 1:
             self.log(f"开始导出：{names[0]}")
@@ -639,6 +701,10 @@ class App(tk.Tk):
         if transcribe_voices:
             self.voices_var.set(True)
 
+        by_sender_args = self._by_sender_args()
+        if by_sender_args is None:
+            return
+
         self.pending_all = True
         if not self._check_media_ready(transcribe_voices):
             return
@@ -655,6 +721,7 @@ class App(tk.Tk):
                 self.videos_var.get(),
                 transcribe_voices,
                 self.db_dir_var.get().strip() or None,
+                *by_sender_args,
             ),
             daemon=True,
         )
@@ -688,6 +755,10 @@ class App(tk.Tk):
         export_videos,
         transcribe_voices,
         db_dir,
+        by_sender=False,
+        sender_filter=None,
+        date_from=None,
+        date_to=None,
     ):
         try:
             result = export_chat(
@@ -700,6 +771,10 @@ class App(tk.Tk):
                 export_videos=export_videos,
                 transcribe_voices=transcribe_voices,
                 db_dir=db_dir,
+                by_sender=by_sender,
+                sender_filter=sender_filter,
+                date_from=date_from,
+                date_to=date_to,
             )
             self.q.put(("done", result))
         except Exception as e:
@@ -715,6 +790,10 @@ class App(tk.Tk):
         export_videos,
         transcribe_voices,
         db_dir,
+        by_sender=False,
+        sender_filter=None,
+        date_from=None,
+        date_to=None,
     ):
         try:
             result = export_chats(
@@ -727,6 +806,10 @@ class App(tk.Tk):
                 export_videos=export_videos,
                 transcribe_voices=transcribe_voices,
                 db_dir=db_dir,
+                by_sender=by_sender,
+                sender_filter=sender_filter,
+                date_from=date_from,
+                date_to=date_to,
             )
             self.q.put(("multi_done", result))
         except Exception as e:
@@ -741,6 +824,10 @@ class App(tk.Tk):
         export_videos,
         transcribe_voices,
         db_dir,
+        by_sender=False,
+        sender_filter=None,
+        date_from=None,
+        date_to=None,
     ):
         try:
             result = export_all_chats(
@@ -752,6 +839,10 @@ class App(tk.Tk):
                 export_videos=export_videos,
                 transcribe_voices=transcribe_voices,
                 db_dir=db_dir,
+                by_sender=by_sender,
+                sender_filter=sender_filter,
+                date_from=date_from,
+                date_to=date_to,
             )
             self.q.put(("all_done", result))
         except Exception as exc:

@@ -10,7 +10,9 @@ from exporter_core import (
     install_local_asr_model,
     install_rust_silk,
     list_group_chats,
+    parse_export_date,
     parse_name_list,
+    parse_sender_list,
 )
 
 
@@ -90,12 +92,58 @@ if __name__ == "__main__":
             "默认自动探测；数据目录被自行迁移过、或自动探测读到错误副本时指定。"
         ),
     )
+    p.add_argument(
+        "--by-sender",
+        action="store_true",
+        help=(
+            "在每个会话目录下额外生成 by_sender/ 按人分组导出"
+            "（每人一份 Markdown + TXT，文件内按自然日分段，"
+            "另有 by_sender_index.json / .md 索引）；不改变原导出文件"
+        ),
+    )
+    p.add_argument(
+        "--sender",
+        action="append",
+        default=None,
+        metavar="人名",
+        help=(
+            "只看这些人：可重复使用，也可用逗号分隔多个人名"
+            "（按导出中显示的发送者名或账号匹配）；"
+            "指定后自动开启 --by-sender"
+        ),
+    )
+    p.add_argument(
+        "--from",
+        dest="date_from",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="按人分组只导出该日期（含）之后的消息；指定后自动开启 --by-sender",
+    )
+    p.add_argument(
+        "--to",
+        dest="date_to",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="按人分组只导出该日期（含）之前的消息；指定后自动开启 --by-sender",
+    )
     a = p.parse_args()
 
     if a.limit is not None and a.limit <= 0:
         p.error("--limit 必须是正整数。")
     if a.limit is not None and not a.export_all:
         p.error("--limit 只能配合 --all 使用。")
+
+    sender_filter = parse_sender_list(a.sender)
+    try:
+        date_from = parse_export_date(a.date_from, "--from 日期")
+        date_to = parse_export_date(a.date_to, "--to 日期")
+    except ValueError as exc:
+        p.error(str(exc))
+    if date_from and date_to and date_from > date_to:
+        p.error(f"--from {date_from} 晚于 --to {date_to}。")
+    by_sender = bool(
+        a.by_sender or sender_filter or date_from or date_to
+    )
 
     if a.install_asr:
         install_local_asr_model(progress=print)
@@ -144,6 +192,10 @@ if __name__ == "__main__":
             transcribe_voices=a.transcribe_voices,
             db_dir=a.db_dir,
             limit=a.limit,
+            by_sender=by_sender,
+            sender_filter=sender_filter,
+            date_from=date_from,
+            date_to=date_to,
         )
         print(
             f"可可靠识别会话 {result['discovered_total']}，"
@@ -186,6 +238,10 @@ if __name__ == "__main__":
             export_videos=(a.videos or a.media),
             transcribe_voices=a.transcribe_voices,
             db_dir=a.db_dir,
+            by_sender=by_sender,
+            sender_filter=sender_filter,
+            date_from=date_from,
+            date_to=date_to,
         )
         print(
             f"本次处理 {result['selected_total']}；"
@@ -213,5 +269,9 @@ if __name__ == "__main__":
         export_videos=(a.videos or a.media),
         transcribe_voices=a.transcribe_voices,
         db_dir=a.db_dir,
+        by_sender=by_sender,
+        sender_filter=sender_filter,
+        date_from=date_from,
+        date_to=date_to,
     )
     print(result)
