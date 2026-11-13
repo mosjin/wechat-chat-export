@@ -22,9 +22,11 @@ from exporter_core import (
     install_rust_silk,
     list_group_chats,
     local_asr_status,
+    TOPIC_GAP_DEFAULT_MINUTES,
     parse_export_date,
     parse_name_list,
     rust_silk_status,
+    validate_topic_gap_minutes,
 )
 from preview import open_chat_preview
 from wechat_data_dirs import choose_wechat_data_dir
@@ -223,6 +225,34 @@ class App(tk.Tk):
         ttk.Label(
             sender_frame,
             text="在会话目录下生成 by_sender/ 子目录：每人一份文件（内按自然日分段）。“只看这些人”可填多个人名、用逗号分隔；日期格式 YYYY-MM-DD，可留空；填了人名或日期即自动开启按人分组。",
+            foreground="#6b7280",
+        ).pack(side="top", anchor="w", pady=(2, 0))
+
+        highlight_line = ttk.Frame(sender_frame)
+        highlight_line.pack(side="top", fill="x", pady=(6, 0))
+
+        self.highlights_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            highlight_line, text="精华候选", variable=self.highlights_var
+        ).pack(side="left")
+
+        ttk.Label(highlight_line, text="特别关注人物：").pack(
+            side="left", padx=(10, 0)
+        )
+        self.focus_var = tk.StringVar()
+        ttk.Entry(highlight_line, textvariable=self.focus_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
+        )
+
+        ttk.Label(highlight_line, text="话题间隔（分钟）：").pack(side="left")
+        self.topic_gap_var = tk.StringVar(value=str(TOPIC_GAP_DEFAULT_MINUTES))
+        ttk.Entry(highlight_line, textvariable=self.topic_gap_var, width=5).pack(
+            side="left", padx=(4, 0)
+        )
+
+        ttk.Label(
+            sender_frame,
+            text="在会话目录下生成 highlights/ 子目录：按话题间隔切分话题段，产出候选清单与给大模型的提示词，由大模型判断价值、命名与总结（程序不联网）。“特别关注人物”可填多人、用逗号或分号分隔（如群主），含其发言的段优先入选；填了关注人物即自动开启精华候选。",
             foreground="#6b7280",
         ).pack(side="top", anchor="w", pady=(2, 0))
 
@@ -627,6 +657,27 @@ class App(tk.Tk):
         )
         return (by_sender, sender_filter or None, date_from, date_to)
 
+    def _highlights_args(self):
+        """读取精华候选选项；话题间隔非法时返回 None 并弹窗提示。"""
+        focus = self.focus_var.get().strip()
+        gap_text = self.topic_gap_var.get().strip()
+        try:
+            if gap_text:
+                try:
+                    gap_value = int(gap_text)
+                except ValueError:
+                    raise ValueError(
+                        f"话题间隔分钟数应为整数，收到：{gap_text}"
+                    ) from None
+            else:
+                gap_value = None
+            gap = validate_topic_gap_minutes(gap_value)
+        except ValueError as exc:
+            messagebox.showwarning(APP_TITLE, str(exc))
+            return None
+        highlights = bool(self.highlights_var.get() or focus)
+        return (highlights, gap, focus or None)
+
     def start_export(self):
         names = parse_name_list(self.name_var.get())
         if not names:
@@ -647,6 +698,9 @@ class App(tk.Tk):
         by_sender_args = self._by_sender_args()
         if by_sender_args is None:
             return
+        highlights_args = self._highlights_args()
+        if highlights_args is None:
+            return
 
         self.pending_all = False
         if not self._check_media_ready(transcribe_voices):
@@ -663,6 +717,7 @@ class App(tk.Tk):
             transcribe_voices,
             self.db_dir_var.get().strip() or None,
             *by_sender_args,
+            *highlights_args,
         )
         if len(names) == 1:
             self.log(f"开始导出：{names[0]}")
@@ -704,6 +759,9 @@ class App(tk.Tk):
         by_sender_args = self._by_sender_args()
         if by_sender_args is None:
             return
+        highlights_args = self._highlights_args()
+        if highlights_args is None:
+            return
 
         self.pending_all = True
         if not self._check_media_ready(transcribe_voices):
@@ -722,6 +780,7 @@ class App(tk.Tk):
                 transcribe_voices,
                 self.db_dir_var.get().strip() or None,
                 *by_sender_args,
+                *highlights_args,
             ),
             daemon=True,
         )
@@ -759,6 +818,9 @@ class App(tk.Tk):
         sender_filter=None,
         date_from=None,
         date_to=None,
+        highlights=False,
+        topic_gap_minutes=None,
+        focus_speakers=None,
     ):
         try:
             result = export_chat(
@@ -775,6 +837,9 @@ class App(tk.Tk):
                 sender_filter=sender_filter,
                 date_from=date_from,
                 date_to=date_to,
+                highlights=highlights,
+                topic_gap_minutes=topic_gap_minutes,
+                focus_speakers=focus_speakers,
             )
             self.q.put(("done", result))
         except Exception as e:
@@ -794,6 +859,9 @@ class App(tk.Tk):
         sender_filter=None,
         date_from=None,
         date_to=None,
+        highlights=False,
+        topic_gap_minutes=None,
+        focus_speakers=None,
     ):
         try:
             result = export_chats(
@@ -810,6 +878,9 @@ class App(tk.Tk):
                 sender_filter=sender_filter,
                 date_from=date_from,
                 date_to=date_to,
+                highlights=highlights,
+                topic_gap_minutes=topic_gap_minutes,
+                focus_speakers=focus_speakers,
             )
             self.q.put(("multi_done", result))
         except Exception as e:
@@ -828,6 +899,9 @@ class App(tk.Tk):
         sender_filter=None,
         date_from=None,
         date_to=None,
+        highlights=False,
+        topic_gap_minutes=None,
+        focus_speakers=None,
     ):
         try:
             result = export_all_chats(
@@ -843,6 +917,9 @@ class App(tk.Tk):
                 sender_filter=sender_filter,
                 date_from=date_from,
                 date_to=date_to,
+                highlights=highlights,
+                topic_gap_minutes=topic_gap_minutes,
+                focus_speakers=focus_speakers,
             )
             self.q.put(("all_done", result))
         except Exception as exc:

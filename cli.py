@@ -11,8 +11,10 @@ from exporter_core import (
     install_rust_silk,
     list_group_chats,
     parse_export_date,
+    parse_focus_list,
     parse_name_list,
     parse_sender_list,
+    validate_topic_gap_minutes,
 )
 
 
@@ -126,6 +128,37 @@ if __name__ == "__main__":
         metavar="YYYY-MM-DD",
         help="按人分组只导出该日期（含）之前的消息；指定后自动开启 --by-sender",
     )
+    p.add_argument(
+        "--highlights",
+        action="store_true",
+        help=(
+            "在每个会话目录下额外生成 highlights/ 精华候选"
+            "（按话题间隔切分话题段，产出 candidates.md / candidates.json / "
+            "llm_prompt.md，供把候选交给大模型判断价值、命名与总结）；"
+            "不改变原导出文件"
+        ),
+    )
+    p.add_argument(
+        "--topic-gap-minutes",
+        type=int,
+        default=None,
+        metavar="分钟",
+        help=(
+            "话题切分间隔：相邻消息超过该分钟数即断开为新话题段"
+            "（默认 30，可调 5-120）；指定后自动开启 --highlights"
+        ),
+    )
+    p.add_argument(
+        "--focus",
+        action="append",
+        default=None,
+        metavar="人名",
+        help=(
+            "特别关注人物：可重复使用，也可用逗号/分号分隔多人"
+            "（按导出中显示的发送者名或账号匹配）；含其发言的话题段"
+            "优先入选精华候选；指定后自动开启 --highlights"
+        ),
+    )
     a = p.parse_args()
 
     if a.limit is not None and a.limit <= 0:
@@ -143,6 +176,15 @@ if __name__ == "__main__":
         p.error(f"--from {date_from} 晚于 --to {date_to}。")
     by_sender = bool(
         a.by_sender or sender_filter or date_from or date_to
+    )
+
+    focus_speakers = parse_focus_list(a.focus)
+    try:
+        topic_gap_minutes = validate_topic_gap_minutes(a.topic_gap_minutes)
+    except ValueError as exc:
+        p.error(str(exc))
+    highlights = bool(
+        a.highlights or focus_speakers or a.topic_gap_minutes is not None
     )
 
     if a.install_asr:
@@ -196,6 +238,9 @@ if __name__ == "__main__":
             sender_filter=sender_filter,
             date_from=date_from,
             date_to=date_to,
+            highlights=highlights,
+            topic_gap_minutes=topic_gap_minutes,
+            focus_speakers=focus_speakers,
         )
         print(
             f"可可靠识别会话 {result['discovered_total']}，"
@@ -242,6 +287,9 @@ if __name__ == "__main__":
             sender_filter=sender_filter,
             date_from=date_from,
             date_to=date_to,
+            highlights=highlights,
+            topic_gap_minutes=topic_gap_minutes,
+            focus_speakers=focus_speakers,
         )
         print(
             f"本次处理 {result['selected_total']}；"
@@ -273,5 +321,8 @@ if __name__ == "__main__":
         sender_filter=sender_filter,
         date_from=date_from,
         date_to=date_to,
+        highlights=highlights,
+        topic_gap_minutes=topic_gap_minutes,
+        focus_speakers=focus_speakers,
     )
     print(result)
