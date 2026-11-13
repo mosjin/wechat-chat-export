@@ -2543,6 +2543,9 @@ def _export_chat_impl(
     sender_filter=None,
     date_from=None,
     date_to=None,
+    highlights=False,
+    topic_gap_minutes=None,
+    focus_speakers=None,
 ):
     def log(msg):
         if progress:
@@ -2919,6 +2922,18 @@ def _export_chat_impl(
             f"索引：{by_sender_result['index_md']}"
         )
 
+    highlights_result = None
+    if highlights:
+        highlights_result = write_highlight_candidates(
+            chat_dir,
+            parsed,
+            is_group,
+            target_name,
+            focus=focus_speakers,
+            gap_minutes=topic_gap_minutes,
+            progress=progress,
+        )
+
     log(f"完成：{len(parsed)} 条消息")
     summaries = [
         (export_images, "图片", "images", image_failures if 'image_failures' in locals() else Counter()),
@@ -2962,6 +2977,7 @@ def _export_chat_impl(
         "md": str(md_path.resolve()),
         "json": str(json_path.resolve()),
         "by_sender": by_sender_result,
+        "highlights": highlights_result,
     }
 
 # System/service identities that are not ordinary private/group chats.
@@ -3313,6 +3329,9 @@ def _export_chats_impl(
     sender_filter=None,
     date_from=None,
     date_to=None,
+    highlights=False,
+    topic_gap_minutes=None,
+    focus_speakers=None,
 ):
     def log(message):
         if progress:
@@ -3419,6 +3438,9 @@ def _export_chats_impl(
                 sender_filter=sender_filter,
                 date_from=date_from,
                 date_to=date_to,
+                highlights=highlights,
+                topic_gap_minutes=topic_gap_minutes,
+                focus_speakers=focus_speakers,
             )
         except EmptyConversationError as exc:
             entry["status"] = MULTI_STATUS_SKIPPED_EMPTY
@@ -3442,6 +3464,7 @@ def _export_chats_impl(
                 "media_stats": result["media_stats"],
                 "sender_resolution_counts": result["sender_resolution_counts"],
                 "by_sender": result.get("by_sender"),
+                "highlights": result.get("highlights"),
             })
             exported += 1
             total_messages += result["message_count"]
@@ -3463,6 +3486,12 @@ def _export_chats_impl(
         "transcribe_voices": bool(transcribe_voices),
         "by_sender": bool(by_sender),
         "sender_filter": parse_sender_list(sender_filter),
+        "highlights": bool(highlights),
+        "topic_gap_minutes": validate_topic_gap_minutes(topic_gap_minutes),
+        "focus_speakers": parse_focus_list(focus_speakers),
+        "highlights": bool(highlights),
+        "topic_gap_minutes": validate_topic_gap_minutes(topic_gap_minutes),
+        "focus_speakers": parse_focus_list(focus_speakers),
         "date_from": date_from,
         "date_to": date_to,
     }
@@ -3497,6 +3526,9 @@ def _export_all_chats_impl(
     sender_filter=None,
     date_from=None,
     date_to=None,
+    highlights=False,
+    topic_gap_minutes=None,
+    focus_speakers=None,
 ):
     def log(message):
         if progress:
@@ -3580,6 +3612,9 @@ def _export_all_chats_impl(
                 sender_filter=sender_filter,
                 date_from=date_from,
                 date_to=date_to,
+                highlights=highlights,
+                topic_gap_minutes=topic_gap_minutes,
+                focus_speakers=focus_speakers,
             )
         except EmptyConversationError as exc:
             entry["status"] = "skipped_empty"
@@ -3602,6 +3637,7 @@ def _export_all_chats_impl(
                 "media_stats": result["media_stats"],
                 "sender_resolution_counts": result["sender_resolution_counts"],
                 "by_sender": result.get("by_sender"),
+                "highlights": result.get("highlights"),
             })
             exported += 1
             total_messages += result["message_count"]
@@ -3658,6 +3694,9 @@ def export_all_chats(
     sender_filter=None,
     date_from=None,
     date_to=None,
+    highlights=False,
+    topic_gap_minutes=None,
+    focus_speakers=None,
 ):
     """Export all reliably identified local private/group conversations."""
     if limit is not None:
@@ -3696,6 +3735,9 @@ def export_all_chats(
                 sender_filter=sender_filter,
                 date_from=date_from,
                 date_to=date_to,
+                highlights=highlights,
+                topic_gap_minutes=topic_gap_minutes,
+                focus_speakers=focus_speakers,
             )
     except BaseException:
         _cleanup_sensitive_workdir(workdir, progress=progress)
@@ -3724,6 +3766,9 @@ def export_chats(
     sender_filter=None,
     date_from=None,
     date_to=None,
+    highlights=False,
+    topic_gap_minutes=None,
+    focus_speakers=None,
 ):
     """Export several named conversations in one run (Issue #1).
 
@@ -3764,6 +3809,9 @@ def export_chats(
                 sender_filter=sender_filter,
                 date_from=date_from,
                 date_to=date_to,
+                highlights=highlights,
+                topic_gap_minutes=topic_gap_minutes,
+                focus_speakers=focus_speakers,
             )
     except BaseException:
         _cleanup_sensitive_workdir(workdir, progress=progress)
@@ -3827,6 +3875,9 @@ def export_chat(
     sender_filter=None,
     date_from=None,
     date_to=None,
+    highlights=False,
+    topic_gap_minutes=None,
+    focus_speakers=None,
 ):
     # 导出前顺便清理本项目上次异常退出留下、且已确认失效的工作目录。
     stale_report = clear_current_sensitive_cache()
@@ -3860,6 +3911,9 @@ def export_chat(
                 sender_filter=sender_filter,
                 date_from=date_from,
                 date_to=date_to,
+                highlights=highlights,
+                topic_gap_minutes=topic_gap_minutes,
+                focus_speakers=focus_speakers,
             )
     except BaseException:
         # KeyboardInterrupt / SystemExit 也先尽力删除本次敏感工作目录，再原样抛出。
@@ -4155,4 +4209,365 @@ def write_by_sender_exports(
         "index_json": str(index_json.resolve()),
         "index_md": str(index_md.resolve()),
         "senders": entries,
+    }
+
+
+# --- Issue #3: topic segmentation + highlight candidates (highlights/) ---
+
+# 精华候选导出的独立常量（不与 Issue #1/#2 的常量共用）。
+HIGHLIGHTS_DIR_NAME = "highlights"
+HIGHLIGHTS_CANDIDATES_MD_NAME = "candidates.md"
+HIGHLIGHTS_CANDIDATES_JSON_NAME = "candidates.json"
+HIGHLIGHTS_LLM_PROMPT_NAME = "llm_prompt.md"
+# 话题切分：相邻消息间隔超过该分钟数即断开（用户定版默认 30，可调 5-120）。
+TOPIC_GAP_DEFAULT_MINUTES = 30
+TOPIC_GAP_MIN_MINUTES = 5
+TOPIC_GAP_MAX_MINUTES = 120
+# 入选信号 b：大家集中讨论的段总条数下限（用户定版 >= 3）。
+TOPIC_CANDIDATE_MIN_MESSAGES = 3
+TOPIC_TITLE_PLACEHOLDER = "待大模型命名"
+# 候选入选原因（机器可读口径，MD 里另有中文标签）。
+TOPIC_REASON_FOCUS = "focus_speaker"
+TOPIC_REASON_DISCUSSION = "discussion_size"
+TOPIC_REASON_MONOLOGUE = "monologue"
+TOPIC_REASON_LABELS = {
+    TOPIC_REASON_FOCUS: "含特别关注人物发言",
+    TOPIC_REASON_DISCUSSION: "集中讨论（总条数 >= 3）",
+    TOPIC_REASON_MONOLOGUE: "单人独白候选",
+}
+
+HIGHLIGHTS_LLM_PROMPT = """# 任务：从微信群聊精华候选里挑出真正的精华，并逐段总结
+
+下面附的是程序按「相邻消息间隔超过设定分钟数就断开」切好的话题段候选
+（candidates.md 的内容，请把它粘贴在这段提示词后面）。程序只负责切分，
+价值判断、话题命名和总结由你完成。
+
+## 要求
+
+1. **段内再拆**：逐段检查内部是否有话题转换——后半段内容与前半段明显
+   不相关时，把该段再拆成两个（或多个）话题分别处理，不要把两个话题
+   混成一个精华。
+2. **价值判断**：结合每段的入选信号（是否含特别关注人物发言、是否集中
+   讨论、是否为单人独白）与内容相关性，给每段一个价值等级：
+   有价值 / 可能有价值 / 无价值。单人独白若在讲概念、定义、结论或成型
+   的想法，应判为有价值或可能有价值，不要因为只有一个人说话就判无价值。
+3. **命名**：为「有价值」的段起一个简短准确的话题名，并按
+   「<起始人>《话题》精华 <段首日期>」的格式输出标题，例如：
+   张三《如何给孩子选编程课》精华 2026-11-13。「可能有价值」的段也给出
+   暂定话题名并标注等级。
+4. **逐段总结**：为每个有价值（及可能有价值）的段写一段精华总结，
+   保留关键事实、结论和原话要点，不要编造候选里没有的内容；
+   「无价值」的段只需列出标题占位和判定理由，不必总结。
+
+## 输出格式
+
+按候选段的原顺序逐段输出：标题（或标题占位）、价值等级、判定理由、
+精华总结（无价值段省略总结）。
+"""
+
+
+def parse_focus_list(raw) -> list[str]:
+    """Split a focus-speaker list（特别关注人物）.
+
+    Same separators as the sender list (',' / '，' / '、' / ';' / '；');
+    the list is supplied per conversation by the user and no name is
+    ever hardcoded.
+    """
+    return parse_sender_list(raw)
+
+
+def validate_topic_gap_minutes(value):
+    """Validate the topic gap in minutes.
+
+    None means "use the default" (TOPIC_GAP_DEFAULT_MINUTES). Anything
+    else must be an integer within
+    [TOPIC_GAP_MIN_MINUTES, TOPIC_GAP_MAX_MINUTES]; raises ValueError
+    with a user-facing message otherwise.
+    """
+    if value is None:
+        return TOPIC_GAP_DEFAULT_MINUTES
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"话题间隔分钟数应为整数，收到：{value}"
+        ) from None
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(f"话题间隔分钟数应为整数，收到：{value}")
+    if not TOPIC_GAP_MIN_MINUTES <= minutes <= TOPIC_GAP_MAX_MINUTES:
+        raise ValueError(
+            f"话题间隔分钟数应在 {TOPIC_GAP_MIN_MINUTES}-"
+            f"{TOPIC_GAP_MAX_MINUTES} 之间，收到：{minutes}"
+        )
+    return minutes
+
+
+def _message_datetime(message: dict):
+    """Datetime of a parsed message, or None when unparseable."""
+    raw = message.get("time")
+    if isinstance(raw, (int, float)) and raw:
+        try:
+            return datetime.fromtimestamp(raw)
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = str(raw or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def split_topic_segments(
+    messages,
+    gap_minutes=None,
+    focus=None,
+) -> list[dict]:
+    """Split parsed messages into topic segments (pure function, no I/O).
+
+    Messages are sorted by time first (stable: equal timestamps keep
+    their original order; messages without a parseable time go last and
+    never trigger a split). A new segment starts whenever the gap
+    between two consecutive timed messages is *strictly greater* than
+    ``gap_minutes`` — a gap of exactly ``gap_minutes`` stays in the
+    same segment (半小时没人再聊才断开).
+
+    Candidate selection (any one is enough, per user spec):
+    - the segment contains a focus speaker's message;
+    - total message count >= TOPIC_CANDIDATE_MIN_MESSAGES;
+    - the segment is a single-speaker monologue.
+    Focus speakers are matched against the display label or the stable
+    sender_username, same convention as the by-sender filter.
+    """
+    gap = validate_topic_gap_minutes(gap_minutes)
+    focus_names = parse_focus_list(focus)
+    focus_set = set(focus_names)
+
+    decorated = []
+    for position, message in enumerate(messages):
+        decorated.append((_message_datetime(message), position, message))
+    decorated.sort(
+        key=lambda item: (
+            item[0] is None,
+            item[0] or datetime.min,
+            item[1],
+        )
+    )
+
+    raw_segments: list[list[dict]] = []
+    current: list[dict] = []
+    previous_dt = None
+    for dt, _position, message in decorated:
+        if (
+            current
+            and dt is not None
+            and previous_dt is not None
+            and (dt - previous_dt).total_seconds() > gap * 60
+        ):
+            raw_segments.append(current)
+            current = []
+        current.append(message)
+        if dt is not None:
+            previous_dt = dt
+    if current:
+        raw_segments.append(current)
+
+    segments: list[dict] = []
+    for index, segment_messages in enumerate(raw_segments, 1):
+        participants: list[str] = []
+        participant_usernames: list = []
+        sender_counts: dict[str, int] = {}
+        focus_count = 0
+        for message in segment_messages:
+            label = str(message.get("sender") or "").strip()
+            username = message.get("sender_username") or None
+            if label not in sender_counts:
+                participants.append(label)
+                participant_usernames.append(username)
+                sender_counts[label] = 0
+            sender_counts[label] += 1
+            if label in focus_set or (username and username in focus_set):
+                focus_count += 1
+        total = len(segment_messages)
+        is_monologue = len(participants) == 1
+        has_focus = focus_count > 0
+        reasons: list[str] = []
+        if has_focus:
+            reasons.append(TOPIC_REASON_FOCUS)
+        if total >= TOPIC_CANDIDATE_MIN_MESSAGES:
+            reasons.append(TOPIC_REASON_DISCUSSION)
+        if is_monologue:
+            reasons.append(TOPIC_REASON_MONOLOGUE)
+        first = segment_messages[0]
+        last = segment_messages[-1]
+        start_time = str(first.get("time") or "") or None
+        start_date = start_time[:10] if start_time else ""
+        starter = str(first.get("sender") or "").strip()
+        segments.append({
+            "index": index,
+            "starter": starter,
+            "starter_username": first.get("sender_username") or None,
+            "participants": participants,
+            "participant_usernames": participant_usernames,
+            "sender_counts": sender_counts,
+            "message_count": total,
+            "start_time": start_time,
+            "end_time": str(last.get("time") or "") or None,
+            "start_date": start_date,
+            "has_focus": has_focus,
+            "focus_message_count": focus_count,
+            "focus_ratio": round(focus_count / total, 4) if total else 0.0,
+            "is_monologue": is_monologue,
+            "candidate": bool(reasons),
+            "candidate_reasons": reasons,
+            "title_placeholder": (
+                f"{starter}《{TOPIC_TITLE_PLACEHOLDER}》精华 {start_date}"
+            ).rstrip(),
+            "messages": segment_messages,
+        })
+    return segments
+
+
+def _write_highlight_candidates_md(path: Path, candidates, meta: dict):
+    lines = [
+        "# 精华候选",
+        "",
+        f"- 导出器版本：{APP_VERSION}",
+        f"- 会话：{meta['chat_name']}",
+        f"- 生成时间：{meta['generated_at']}",
+        f"- 话题切分间隔：相邻消息超过 {meta['topic_gap_minutes']} 分钟断开",
+        f"- 特别关注人物：{'、'.join(meta['focus_speakers']) or '（未指定）'}",
+        (
+            f"- 话题段共 {meta['segment_total']} 段，入选候选 "
+            f"{meta['candidate_total']} 段；未入选 {meta['excluded_segment_total']} "
+            f"段（{meta['excluded_message_total']} 条）未列入本文件，计数见 candidates.json"
+        ),
+        "",
+        "把 llm_prompt.md 的提示词与本文件一起交给大模型，即可得到命名后的精华与逐段总结。",
+        "",
+    ]
+    for segment in candidates:
+        lines.append(f"## {segment['title_placeholder']}")
+        lines.append("")
+        reason_labels = "、".join(
+            TOPIC_REASON_LABELS.get(reason, reason)
+            for reason in segment["candidate_reasons"]
+        )
+        lines.append(f"- 入选理由：{reason_labels}")
+        lines.append(
+            f"- 时间：{segment['start_time'] or '—'} ~ {segment['end_time'] or '—'}"
+        )
+        lines.append(
+            f"- 参与者：{'、'.join(segment['participants'])}"
+            f"（共 {segment['message_count']} 条）"
+        )
+        counts = "、".join(
+            f"{name} {count} 条"
+            for name, count in segment["sender_counts"].items()
+        )
+        lines.append(f"- 每人条数：{counts}")
+        if meta["focus_speakers"]:
+            lines.append(
+                f"- 特别关注人物条数：{segment['focus_message_count']} 条"
+                f"（占比 {segment['focus_ratio']:.0%}）"
+            )
+        lines.append("")
+        for message in segment["messages"]:
+            content = message.get("content") or f"[{message.get('type')}]"
+            lines.append(
+                f"{message.get('time')} | {message.get('sender')}：{content}"
+            )
+            transcript = message.get("transcript") or (
+                message.get("media") or {}
+            ).get("transcript")
+            if transcript:
+                lines.append(f"    ↳ 转文字：{transcript}")
+        lines.append("")
+    with path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines))
+
+
+def write_highlight_candidates(
+    chat_dir,
+    messages,
+    is_group,
+    target_name,
+    focus=None,
+    gap_minutes=None,
+    progress=None,
+):
+    """Write the highlights/ companion export for one conversation.
+
+    Produces <chat_dir>/highlights/candidates.md + candidates.json +
+    llm_prompt.md. The program only segments and shortlists locally;
+    judging value, naming topics and summarizing is left to an LLM
+    (see llm_prompt.md). Segments that match no candidate signal are
+    not written to the candidate files but are counted in the JSON.
+    Original export files are untouched.
+    """
+    def log(msg):
+        if progress:
+            progress(msg)
+
+    gap = validate_topic_gap_minutes(gap_minutes)
+    focus_names = parse_focus_list(focus)
+
+    chat_dir = Path(chat_dir)
+    highlights_dir = chat_dir / HIGHLIGHTS_DIR_NAME
+    highlights_dir.mkdir(parents=True, exist_ok=True)
+
+    segments = split_topic_segments(
+        messages,
+        gap_minutes=gap,
+        focus=focus_names,
+    )
+    candidates = [s for s in segments if s["candidate"]]
+    excluded = [s for s in segments if not s["candidate"]]
+
+    meta = {
+        "chat_name": target_name,
+        "chat_type": "group" if is_group else "private",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "topic_gap_minutes": gap,
+        "focus_speakers": focus_names,
+        "segment_total": len(segments),
+        "candidate_total": len(candidates),
+        "excluded_segment_total": len(excluded),
+        "excluded_message_total": sum(s["message_count"] for s in excluded),
+    }
+
+    candidates_json_path = highlights_dir / HIGHLIGHTS_CANDIDATES_JSON_NAME
+    with candidates_json_path.open("w", encoding="utf-8-sig") as f:
+        json.dump(
+            {"exporter_version": APP_VERSION, **meta, "candidates": candidates},
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    candidates_md_path = highlights_dir / HIGHLIGHTS_CANDIDATES_MD_NAME
+    _write_highlight_candidates_md(candidates_md_path, candidates, meta)
+
+    llm_prompt_path = highlights_dir / HIGHLIGHTS_LLM_PROMPT_NAME
+    with llm_prompt_path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write(
+            f"<!-- 会话：{target_name}；候选文件："
+            f"{HIGHLIGHTS_CANDIDATES_MD_NAME}；"
+            f"切分间隔：{gap} 分钟 -->\n\n"
+        )
+        f.write(HIGHLIGHTS_LLM_PROMPT)
+
+    log(
+        f"精华候选：{meta['segment_total']} 个话题段入选 "
+        f"{meta['candidate_total']} 段；"
+        f"候选：{candidates_md_path}"
+    )
+    return {
+        **meta,
+        "dir": str(highlights_dir.resolve()),
+        "candidates_md": str(candidates_md_path.resolve()),
+        "candidates_json": str(candidates_json_path.resolve()),
+        "llm_prompt": str(llm_prompt_path.resolve()),
+        "candidates": candidates,
     }
