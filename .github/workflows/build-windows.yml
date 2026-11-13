@@ -14,9 +14,11 @@ on:
       - "merge_highlights.py"
       - "preview.py"
       - "wechat_data_dirs.py"
+      - "build_exe.py"
       - "tests/**"
       - "requirements.txt"
       - "README.md"
+      - "LICENSE"
       - "THIRD_PARTY_NOTICES.md"
       - "assets/app.ico"
   push:
@@ -31,9 +33,11 @@ on:
       - "merge_highlights.py"
       - "preview.py"
       - "wechat_data_dirs.py"
+      - "build_exe.py"
       - "tests/**"
       - "requirements.txt"
       - "README.md"
+      - "LICENSE"
       - "THIRD_PARTY_NOTICES.md"
       - "assets/app.ico"
 
@@ -144,7 +148,7 @@ jobs:
       - name: Syntax check
         shell: pwsh
         run: |
-          python -m py_compile app.py cli.py exporter_core.py merge_highlights.py preview.py wechat_data_dirs.py
+          python -m py_compile app.py cli.py exporter_core.py merge_highlights.py preview.py wechat_data_dirs.py build_exe.py
 
       - name: Unit tests
         shell: pwsh
