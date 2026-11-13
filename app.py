@@ -28,6 +28,11 @@ from exporter_core import (
     rust_silk_status,
     validate_topic_gap_minutes,
 )
+from merge_highlights import (
+    merge_highlights_by_person,
+    merge_highlights_by_topic,
+    parse_merge_list,
+)
 from preview import open_chat_preview
 from wechat_data_dirs import choose_wechat_data_dir
 
@@ -253,6 +258,42 @@ class App(tk.Tk):
         ttk.Label(
             sender_frame,
             text="在会话目录下生成 highlights/ 子目录：按话题间隔切分话题段，产出候选清单与给大模型的提示词，由大模型判断价值、命名与总结（程序不联网）。“特别关注人物”可填多人、用逗号或分号分隔（如群主），含其发言的段优先入选；填了关注人物即自动开启精华候选。",
+            foreground="#6b7280",
+        ).pack(side="top", anchor="w", pady=(2, 0))
+
+        merge_line = ttk.Frame(sender_frame)
+        merge_line.pack(side="top", fill="x", pady=(6, 0))
+
+        ttk.Label(merge_line, text="合并精华：").pack(side="left")
+        self.merge_mode_var = tk.StringVar(value="person")
+        ttk.Radiobutton(
+            merge_line,
+            text="以人为中心",
+            variable=self.merge_mode_var,
+            value="person",
+        ).pack(side="left", padx=(4, 0))
+        ttk.Radiobutton(
+            merge_line,
+            text="以话题为中心",
+            variable=self.merge_mode_var,
+            value="topic",
+        ).pack(side="left", padx=(4, 0))
+
+        ttk.Label(merge_line, text="人名 / 关键词：").pack(
+            side="left", padx=(10, 0)
+        )
+        self.merge_query_var = tk.StringVar()
+        ttk.Entry(merge_line, textvariable=self.merge_query_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
+        )
+        self.merge_btn = ttk.Button(
+            merge_line, text="执行合并", command=self.start_merge_highlights
+        )
+        self.merge_btn.pack(side="left")
+
+        ttk.Label(
+            sender_frame,
+            text="对上方“输出目录”里已导出的会话做后处理：扫描各会话的 highlights/ 精华候选，按人或按话题跨群跨日期合并到输出目录的 merged/ 子目录，并附给大模型的提示词（程序不联网、不连微信）。人名/关键词可填多个、用逗号分隔；没有精华候选的会话会跳过并在日志中列明。",
             foreground="#6b7280",
         ).pack(side="top", anchor="w", pady=(2, 0))
 
@@ -678,6 +719,52 @@ class App(tk.Tk):
         highlights = bool(self.highlights_var.get() or focus)
         return (highlights, gap, focus or None)
 
+    def start_merge_highlights(self):
+        """精华合并后处理：只读已有导出目录，不连微信、不需要微信运行。"""
+        targets = parse_merge_list(self.merge_query_var.get())
+        if not targets:
+            messagebox.showwarning(
+                APP_TITLE,
+                "请先填写人名或关键词（多个可用逗号分隔）。",
+            )
+            return
+        exports_root = self.out_var.get().strip()
+        if not exports_root or not Path(exports_root).is_dir():
+            messagebox.showwarning(
+                APP_TITLE,
+                f"输出目录不存在：{exports_root or '（空）'}\n\n"
+                "请先导出聊天，或确认输出目录填写正确。",
+            )
+            return
+        mode = self.merge_mode_var.get()
+        mode_label = "以人为中心" if mode == "person" else "以话题为中心"
+        self.merge_btn.configure(state="disabled")
+        self.log("")
+        self.log(f"开始精华合并（{mode_label}）：{'、'.join(targets)}")
+        threading.Thread(
+            target=self.merge_highlights_worker,
+            args=(mode, targets, exports_root),
+            daemon=True,
+        ).start()
+
+    def merge_highlights_worker(self, mode, targets, exports_root):
+        try:
+            if mode == "person":
+                report = merge_highlights_by_person(
+                    exports_root,
+                    targets,
+                    progress=lambda m: self.q.put(("log", m)),
+                )
+            else:
+                report = merge_highlights_by_topic(
+                    exports_root,
+                    targets,
+                    progress=lambda m: self.q.put(("log", m)),
+                )
+            self.q.put(("merge_done", report))
+        except Exception as exc:
+            self.q.put(("merge_error", f"{type(exc).__name__}: {exc}"))
+
     def start_export(self):
         names = parse_name_list(self.name_var.get())
         if not names:
@@ -931,6 +1018,32 @@ class App(tk.Tk):
                 kind, payload = self.q.get_nowait()
                 if kind == "log":
                     self.log(payload)
+                elif kind == "merge_done":
+                    self.merge_btn.configure(state="normal")
+                    for skipped in payload["skipped_sessions"]:
+                        self.log(
+                            f"已跳过会话 {skipped['folder']}：{skipped['reason']}"
+                        )
+                    summary_lines = []
+                    for output in payload["outputs"]:
+                        label = output.get("person") or output.get("keyword")
+                        self.log(f"合并产物：{output['md']}")
+                        summary_lines.append(
+                            f"{label}：{output['segment_total']} 段、"
+                            f"{output['message_total']} 条消息"
+                        )
+                    messagebox.showinfo(
+                        APP_TITLE,
+                        "精华合并完成。\n\n"
+                        + "\n".join(summary_lines)
+                        + f"\n\n产物目录：\n{payload['merged_dir']}",
+                    )
+                elif kind == "merge_error":
+                    self.merge_btn.configure(state="normal")
+                    messagebox.showerror(
+                        APP_TITLE,
+                        "精华合并失败：\n\n" + payload,
+                    )
                 elif kind == "done":
                     self.last_output = payload["output_dir"]
                     self.last_result = payload
