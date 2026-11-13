@@ -1,18 +1,31 @@
 # -*- coding: utf-8 -*-
 import argparse
+import sys
 
 from exporter_core import (
     clear_sensitive_cache,
     export_all_chats,
     export_chat,
+    export_chats,
     install_local_asr_model,
     install_rust_silk,
+    list_group_chats,
+    parse_name_list,
 )
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="微信聊天信息导出给大模型")
-    p.add_argument("name", nargs="?", help="好友备注/昵称或群名")
+    p.add_argument(
+        "name",
+        nargs="?",
+        help="好友备注/昵称或群名；多个可用 ; 或 ； 分隔，一次导出",
+    )
+    p.add_argument(
+        "--list-groups",
+        action="store_true",
+        help="列出本机可可靠识别的群聊名称（每行一个）后退出，便于抄写群名",
+    )
     p.add_argument("--out", default="exports")
     p.add_argument(
         "--images",
@@ -107,6 +120,17 @@ if __name__ == "__main__":
                 )
             raise SystemExit(1)
         raise SystemExit(0)
+    if a.list_groups:
+        if a.name or a.export_all:
+            print("注意：已指定 --list-groups，忽略其他导出参数。")
+        groups = list_group_chats(
+            db_dir=a.db_dir,
+            progress=lambda m: print(m, file=sys.stderr),
+        )
+        for group in groups:
+            print(group["name"])
+        print(f"共 {len(groups)} 个可可靠识别的群聊。", file=sys.stderr)
+        raise SystemExit(0)
     if a.export_all:
         if a.name:
             print(f"注意：已指定 --all，忽略会话关键词“{a.name}”。")
@@ -144,13 +168,43 @@ if __name__ == "__main__":
 
     if not a.name:
         p.error(
-            "请提供好友备注/昵称或群名；或用 --all 导出全部聊天；"
+            "请提供好友备注/昵称或群名（多个可用 ; 分隔）；"
+            "或用 --all 导出全部聊天；或用 --list-groups 列出群聊；"
             "或使用 --install-asr / --install-rust-silk / "
             "--clear-sensitive-cache"
         )
 
+    names = parse_name_list(a.name)
+    if len(names) > 1:
+        result = export_chats(
+            names,
+            a.out,
+            progress=print,
+            export_images=(a.images or a.media),
+            export_files=(a.files or a.media),
+            export_voices=(a.voices or a.media or a.transcribe_voices),
+            export_videos=(a.videos or a.media),
+            transcribe_voices=a.transcribe_voices,
+            db_dir=a.db_dir,
+        )
+        print(
+            f"本次处理 {result['selected_total']}；"
+            f"成功 {result['exported']}，无消息 {result['skipped_empty']}，"
+            f"失败 {result['failed']}，重复跳过 {result['duplicates']}，"
+            f"消息总数 {result['total_messages']}。"
+        )
+        print("输出目录：" + result["output_dir"])
+        print("总索引：" + result["index_md"])
+        if not result["sensitive_cache_cleanup"]:
+            print(
+                "敏感临时缓存自动清理失败："
+                + str(result.get("sensitive_cache_cleanup_error"))
+            )
+            raise SystemExit(1)
+        raise SystemExit(1 if result["failed"] else 0)
+
     result = export_chat(
-        a.name,
+        names[0],
         a.out,
         progress=print,
         export_images=(a.images or a.media),

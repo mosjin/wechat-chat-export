@@ -3176,6 +3176,276 @@ def _write_all_chats_index(out_root: Path, chats: list[dict], meta: dict):
     return json_path, md_path
 
 
+# --- Issue #1: multi-name export (semicolon list) + group listing ---------
+
+# 名称列表分隔符：英文分号与中文分号都认（用户在中文输入法下常打出后者）。
+NAME_LIST_SPLIT_RE = re.compile(r"[;；]")
+MULTI_INDEX_JSON_NAME = "multi_index.json"
+MULTI_INDEX_MD_NAME = "multi_index.md"
+MULTI_STATUS_EXPORTED = "exported"
+MULTI_STATUS_SKIPPED_EMPTY = "skipped_empty"
+MULTI_STATUS_FAILED = "failed"
+MULTI_STATUS_DUPLICATE = "duplicate"
+
+
+def parse_name_list(raw) -> list[str]:
+    """Split a user-supplied name list on ';' / '；'.
+
+    Accepts a single string, an iterable of strings, or None. Items are
+    stripped, empty items are dropped, and duplicates are removed while
+    preserving first-seen order, so a single plain name behaves exactly
+    as before this feature existed.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parts = NAME_LIST_SPLIT_RE.split(raw)
+    else:
+        parts = []
+        for item in raw:
+            parts.extend(NAME_LIST_SPLIT_RE.split(str(item)))
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        name = part.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def group_chats_from_candidates(chats: list[dict]) -> list[dict]:
+    """Keep only group chats from _batch_chat_candidates output.
+
+    The candidate order (most recent conversation first) is preserved.
+    """
+    return [c for c in chats if c.get("is_group")]
+
+
+def _write_multi_index(out_root: Path, chats: list[dict], meta: dict):
+    out_root = Path(out_root)
+    json_path = out_root / MULTI_INDEX_JSON_NAME
+    md_path = out_root / MULTI_INDEX_MD_NAME
+
+    with json_path.open("w", encoding="utf-8-sig") as f:
+        json.dump(
+            {"exporter_version": APP_VERSION, **meta, "chats": chats},
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    lines = [
+        "# 多会话导出索引",
+        "",
+        f"- 导出器版本：{APP_VERSION}",
+        f"- 生成时间：{meta['generated_at']}",
+        f"- 本次处理：{meta['selected_total']}",
+        f"- 成功：{meta['exported']}；无消息：{meta['skipped_empty']}；"
+        f"失败：{meta['failed']}；重复跳过：{meta['duplicates']}",
+        f"- 消息总数：{meta['total_messages']}",
+        "",
+        "| 输入名称 | 会话 | 类型 | 消息数 | 状态 / 文件夹 |",
+        "| --- | --- | --- | ---: | --- |",
+    ]
+    for item in chats:
+        input_label = str(item.get("input_name") or "").replace("|", "\\|")
+        label = str(item.get("name") or item.get("username") or "").replace("|", "\\|")
+        kind = "群聊" if item.get("is_group") else ("私聊" if item.get("is_group") is False else "—")
+        if item["status"] == MULTI_STATUS_EXPORTED:
+            href = _markdown_href(item["folder"])
+            status = f"[{item['folder']}]({href})"
+        elif item["status"] == MULTI_STATUS_SKIPPED_EMPTY:
+            status = "无消息"
+        elif item["status"] == MULTI_STATUS_DUPLICATE:
+            note = str(item.get("error") or "与前面的名称指向同一会话").replace("|", "\\|")
+            status = f"重复跳过：{note}"
+        else:
+            error = str(item.get("error") or "未知错误").replace("|", "\\|")
+            status = f"失败：{error}"
+        lines.append(
+            f"| {input_label} | {label} | {kind} "
+            f"| {item.get('message_count', 0)} | {status} |"
+        )
+    lines.append("")
+
+    with md_path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines))
+    return json_path, md_path
+
+
+def _export_chats_impl(
+    names,
+    out_root="exports",
+    progress=None,
+    export_images=False,
+    export_files=False,
+    export_voices=False,
+    export_videos=False,
+    transcribe_voices=False,
+    db_dir=None,
+    workdir=None,
+):
+    def log(message):
+        if progress:
+            progress(message)
+
+    if transcribe_voices:
+        export_voices = True
+
+    names = parse_name_list(names)
+    if not names:
+        raise ValueError("没有提供要导出的会话名称（多个名称可用 ; 分隔）。")
+
+    if db_dir:
+        db_dir = resolve_db_dir(db_dir)
+        log(f"正在连接微信本地数据库…（指定目录：{db_dir}）")
+    else:
+        log("正在连接微信本地数据库…")
+
+    # 整批只建一次数据库连接，并复用账号级 index_cache（与导出全部同口径）。
+    db = WeChatDB(db_dir=db_dir, workdir=str(workdir) if workdir else None)
+
+    out_root = Path(out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
+    index_cache: dict = {}
+    results: list[dict] = []
+    exported = skipped_empty = failed = duplicates = total_messages = 0
+    seen_usernames: dict[str, str] = {}
+    used_folders: dict[str, str] = {}
+
+    for position, input_name in enumerate(names, 1):
+        entry = {
+            "input_name": input_name,
+            "name": input_name,
+            "username": None,
+            "is_group": None,
+            "status": MULTI_STATUS_FAILED,
+            "message_count": 0,
+            "output_dir": None,
+            "folder": None,
+            "txt": None,
+            "md": None,
+            "json": None,
+            "media_stats": None,
+            "sender_resolution_counts": None,
+            "error": None,
+        }
+        log(f"[{position}/{len(names)}] {input_name}")
+
+        try:
+            target = find_contact(db, input_name)
+            username = target["username"]
+            display = (
+                target.get("remark")
+                or target.get("nick_name")
+                or target.get("name")
+                or input_name
+            )
+        except Exception as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            failed += 1
+            log(f"该会话未找到或无法识别，继续下一个：{entry['error']}")
+            results.append(entry)
+            continue
+
+        entry["name"] = display
+        entry["username"] = username
+        entry["is_group"] = (
+            username.endswith("@chatroom") if isinstance(username, str) else None
+        )
+
+        if username in seen_usernames:
+            entry["status"] = MULTI_STATUS_DUPLICATE
+            entry["error"] = (
+                f"与“{seen_usernames[username]}”指向同一会话，已跳过重复导出。"
+            )
+            duplicates += 1
+            log(f"与前面名称指向同一会话，跳过重复导出：{input_name}")
+            results.append(entry)
+            continue
+        seen_usernames[username] = input_name
+
+        # 与单导出同口径：文件夹由显示名派生；仅当不同会话同名冲突时
+        # 才改用稳定 username 文件夹，避免两个会话串进同一目录。
+        folder_name = safe_folder_name(display)
+        if folder_name in used_folders and used_folders[folder_name] != username:
+            folder_name = _stable_batch_folder(username)
+        used_folders[folder_name] = username
+        entry["folder"] = folder_name
+
+        try:
+            result = _export_chat_impl(
+                out_root=out_root,
+                progress=progress,
+                export_images=export_images,
+                export_files=export_files,
+                export_voices=export_voices,
+                export_videos=export_videos,
+                transcribe_voices=transcribe_voices,
+                db=db,
+                contact={"username": username, "name": display},
+                folder_name=folder_name,
+                index_cache=index_cache,
+            )
+        except EmptyConversationError as exc:
+            entry["status"] = MULTI_STATUS_SKIPPED_EMPTY
+            entry["error"] = str(exc)
+            skipped_empty += 1
+            log(f"该会话没有可读取的本地消息，已跳过：{display}")
+        except Exception as exc:
+            entry["status"] = MULTI_STATUS_FAILED
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            failed += 1
+            log(f"该会话导出失败，继续下一个：{entry['error']}")
+        else:
+            entry.update({
+                "status": MULTI_STATUS_EXPORTED,
+                "message_count": result["message_count"],
+                "output_dir": result["output_dir"],
+                "folder": Path(result["output_dir"]).name,
+                "txt": result["txt"],
+                "md": result["md"],
+                "json": result["json"],
+                "media_stats": result["media_stats"],
+                "sender_resolution_counts": result["sender_resolution_counts"],
+            })
+            exported += 1
+            total_messages += result["message_count"]
+
+        results.append(entry)
+
+    meta = {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "selected_total": len(names),
+        "exported": exported,
+        "skipped_empty": skipped_empty,
+        "failed": failed,
+        "duplicates": duplicates,
+        "total_messages": total_messages,
+        "export_images": bool(export_images),
+        "export_files": bool(export_files),
+        "export_voices": bool(export_voices),
+        "export_videos": bool(export_videos),
+        "transcribe_voices": bool(transcribe_voices),
+    }
+    index_json, index_md = _write_multi_index(out_root, results, meta)
+    log(
+        f"全部完成：成功 {exported}、无消息 {skipped_empty}、"
+        f"失败 {failed}、重复跳过 {duplicates}；共 {total_messages} 条消息。"
+    )
+    log(f"总索引：{index_md}")
+
+    return {
+        **meta,
+        "output_dir": str(out_root.resolve()),
+        "index_json": str(index_json.resolve()),
+        "index_md": str(index_md.resolve()),
+        "chats": results,
+    }
+
+
 def _export_all_chats_impl(
     out_root="exports",
     progress=None,
@@ -3381,6 +3651,101 @@ def export_all_chats(
     result["sensitive_cache_cleanup"] = cleanup_ok
     result["sensitive_cache_cleanup_error"] = cleanup_error
     return result
+
+
+def export_chats(
+    names,
+    out_root="exports",
+    progress=None,
+    export_images=False,
+    export_files=False,
+    export_voices=False,
+    export_videos=False,
+    transcribe_voices=False,
+    db_dir=None,
+):
+    """Export several named conversations in one run (Issue #1).
+
+    ``names`` may be a ';' / '；' separated string or an iterable of names.
+    The whole batch shares one database connection and one sensitive
+    workdir; a single conversation failing never aborts the rest, and a
+    multi_index.json / multi_index.md summary is written to ``out_root``.
+    """
+    names = parse_name_list(names)
+    if not names:
+        raise ValueError("没有提供要导出的会话名称（多个名称可用 ; 分隔）。")
+
+    stale_report = clear_current_sensitive_cache()
+    if progress and stale_report.get("removed"):
+        progress(
+            f"已自动清理 {len(stale_report['removed'])} 个上次异常退出留下的敏感临时目录。"
+        )
+
+    workdir = _create_sensitive_workdir()
+    if progress:
+        progress("敏感数据库密钥和解密缓存将使用一次性临时目录，导出结束后自动清理。")
+
+    result = None
+    try:
+        with _upstream_sensitive_sandbox(workdir):
+            result = _export_chats_impl(
+                names,
+                out_root=out_root,
+                progress=progress,
+                export_images=export_images,
+                export_files=export_files,
+                export_voices=export_voices,
+                export_videos=export_videos,
+                transcribe_voices=transcribe_voices,
+                db_dir=db_dir,
+                workdir=str(workdir),
+            )
+    except BaseException:
+        _cleanup_sensitive_workdir(workdir, progress=progress)
+        raise
+
+    cleanup_ok, cleanup_error = _cleanup_sensitive_workdir(
+        workdir,
+        progress=progress,
+    )
+    result["sensitive_cache_cleanup"] = cleanup_ok
+    result["sensitive_cache_cleanup_error"] = cleanup_error
+    return result
+
+
+def list_group_chats(db_dir=None, progress=None):
+    """List reliably identified local group chats, most recent first.
+
+    Reuses the same enumeration as the bulk export, filtered to groups.
+    Returns dicts with name / username / last_time / last_time_text.
+    """
+    stale_report = clear_current_sensitive_cache()
+    if progress and stale_report.get("removed"):
+        progress(
+            f"已自动清理 {len(stale_report['removed'])} 个上次异常退出留下的敏感临时目录。"
+        )
+
+    workdir = _create_sensitive_workdir()
+    try:
+        with _upstream_sensitive_sandbox(workdir):
+            if db_dir:
+                resolved = resolve_db_dir(db_dir)
+            else:
+                resolved = None
+            db = WeChatDB(db_dir=resolved, workdir=str(workdir))
+            chats, _unresolved = _batch_chat_candidates(db, progress=progress)
+            groups = group_chats_from_candidates(chats)
+            return [
+                {
+                    "name": item.get("name") or item["username"],
+                    "username": item["username"],
+                    "last_time": item.get("last_time"),
+                    "last_time_text": _batch_time_text(item.get("last_time")),
+                }
+                for item in groups
+            ]
+    finally:
+        _cleanup_sensitive_workdir(workdir, progress=progress)
 
 
 def export_chat(
