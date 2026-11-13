@@ -332,11 +332,34 @@ wechat-chat-export\
 
 正式 Windows EXE 会在 GitHub Actions 构建时自动下载并打包 `rust-silk`，普通用户不需要额外安装。
 
-## Windows 构建
+## 如何编译成 Windows EXE
 
-`.github/workflows/build-windows.yml` 会在 GitHub Actions 中构建 Windows EXE。
+打包工具是 PyInstaller，有两条路，产物完全一致：单文件、无控制台窗口的 `WeChat-Chat-Export-for-LLM.exe`（图标 `assets/app.ico`），另组一个发布 zip（exe + README + LICENSE + THIRD_PARTY_NOTICES.md）。
 
-构建时会下载固定版本的 `rust-silk v0.1.3` 并校验 SHA-256，再和 Python 运行时及项目依赖一起打包。
+关键事实（两条路相同）：
+
+- 打包参数含 `--onefile --windowed`，并用 `--collect-all` 收齐 `wechatauto`、`winsdk`、`uiautomation`、`comtypes`、`imageio_ffmpeg`、`sherpa_onnx`、`soundfile`，另带 `--hidden-import win32timezone`；
+- 构建时会下载固定版本的 `rust-silk v0.1.3` 并校验 SHA-256，再内嵌进 EXE（`--add-binary`），普通用户不需要额外安装；
+- 目前没有商业代码签名证书，第一次运行可能遇到 Windows SmartScreen 提示（同「下载」一节口径：不需要为此关闭 Defender、SmartScreen 或添加安全软件排除项）。
+
+### 云端构建（GitHub Actions）
+
+`.github/workflows/build-windows.yml`（Build Windows EXE）会在 PR / 推送命中清单内文件时自动构建，也可以手动触发：
+
+1. 打开仓库的 Actions 页，选择 Build Windows EXE，点 Run workflow；
+2. 构建完成后在该次运行页底部下载 artifact `WeChat-Chat-Export-for-LLM-Windows`，内含 exe 与 zip。
+
+注意：**fork 出来的仓库默认禁用 Actions**，需先在 Actions 页点启用工作流，之后才能手动触发或自动构建（本仓库已于 2026-11-13 启用）。
+
+### 本地构建（build_exe.py）
+
+在 Windows 10/11 + Python 3.12 的机器上，仓库根目录运行：
+
+```powershell
+python build_exe.py
+```
+
+脚本与工作流步骤逐项对齐：装依赖（pyinstaller + `requirements.txt`）→ 校验 `wechatauto-replica` 锁定版本与 API 契约 → 下载 rust-silk 并验 SHA-256 → `py_compile` 语法检查 → 单元测试 → PyInstaller 同参数打包 → 组 zip。任一步失败会立即停下并报清是哪一步，不产出半成品 zip。产物在 `dist/`：`WeChat-Chat-Export-for-LLM.exe` 与 `WeChat-Chat-Export-for-LLM-Windows.zip`。脚本只能在 Windows 上运行，在其他系统上会直接报错退出。
 
 SenseVoice 模型不会打进 EXE，只有用户主动开启本地语音转文字后才会下载。
 
