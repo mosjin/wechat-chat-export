@@ -2539,6 +2539,10 @@ def _export_chat_impl(
     contact=None,
     folder_name=None,
     index_cache=None,
+    by_sender=False,
+    sender_filter=None,
+    date_from=None,
+    date_to=None,
 ):
     def log(msg):
         if progress:
@@ -2897,6 +2901,24 @@ def _export_chat_impl(
             "messages": parsed,
         }, f, ensure_ascii=False, indent=2)
 
+    by_sender_result = None
+    if by_sender:
+        by_sender_result = write_by_sender_exports(
+            chat_dir,
+            parsed,
+            is_group,
+            target_name,
+            senders=sender_filter,
+            date_from=date_from,
+            date_to=date_to,
+            progress=progress,
+        )
+        log(
+            f"按人分组导出：{by_sender_result['sender_total']} 位发送者、"
+            f"{by_sender_result['message_total']} 条消息；"
+            f"索引：{by_sender_result['index_md']}"
+        )
+
     log(f"完成：{len(parsed)} 条消息")
     summaries = [
         (export_images, "图片", "images", image_failures if 'image_failures' in locals() else Counter()),
@@ -2939,6 +2961,7 @@ def _export_chat_impl(
         "txt": str(txt_path.resolve()),
         "md": str(md_path.resolve()),
         "json": str(json_path.resolve()),
+        "by_sender": by_sender_result,
     }
 
 # System/service identities that are not ordinary private/group chats.
@@ -3286,6 +3309,10 @@ def _export_chats_impl(
     transcribe_voices=False,
     db_dir=None,
     workdir=None,
+    by_sender=False,
+    sender_filter=None,
+    date_from=None,
+    date_to=None,
 ):
     def log(message):
         if progress:
@@ -3388,6 +3415,10 @@ def _export_chats_impl(
                 contact={"username": username, "name": display},
                 folder_name=folder_name,
                 index_cache=index_cache,
+                by_sender=by_sender,
+                sender_filter=sender_filter,
+                date_from=date_from,
+                date_to=date_to,
             )
         except EmptyConversationError as exc:
             entry["status"] = MULTI_STATUS_SKIPPED_EMPTY
@@ -3410,6 +3441,7 @@ def _export_chats_impl(
                 "json": result["json"],
                 "media_stats": result["media_stats"],
                 "sender_resolution_counts": result["sender_resolution_counts"],
+                "by_sender": result.get("by_sender"),
             })
             exported += 1
             total_messages += result["message_count"]
@@ -3429,6 +3461,10 @@ def _export_chats_impl(
         "export_voices": bool(export_voices),
         "export_videos": bool(export_videos),
         "transcribe_voices": bool(transcribe_voices),
+        "by_sender": bool(by_sender),
+        "sender_filter": parse_sender_list(sender_filter),
+        "date_from": date_from,
+        "date_to": date_to,
     }
     index_json, index_md = _write_multi_index(out_root, results, meta)
     log(
@@ -3457,6 +3493,10 @@ def _export_all_chats_impl(
     db_dir=None,
     workdir=None,
     limit=None,
+    by_sender=False,
+    sender_filter=None,
+    date_from=None,
+    date_to=None,
 ):
     def log(message):
         if progress:
@@ -3536,6 +3576,10 @@ def _export_all_chats_impl(
                 contact=contact,
                 folder_name=folder,
                 index_cache=index_cache,
+                by_sender=by_sender,
+                sender_filter=sender_filter,
+                date_from=date_from,
+                date_to=date_to,
             )
         except EmptyConversationError as exc:
             entry["status"] = "skipped_empty"
@@ -3557,6 +3601,7 @@ def _export_all_chats_impl(
                 "json": result["json"],
                 "media_stats": result["media_stats"],
                 "sender_resolution_counts": result["sender_resolution_counts"],
+                "by_sender": result.get("by_sender"),
             })
             exported += 1
             total_messages += result["message_count"]
@@ -3578,6 +3623,10 @@ def _export_all_chats_impl(
         "export_voices": bool(export_voices),
         "export_videos": bool(export_videos),
         "transcribe_voices": bool(transcribe_voices),
+        "by_sender": bool(by_sender),
+        "sender_filter": parse_sender_list(sender_filter),
+        "date_from": date_from,
+        "date_to": date_to,
     }
     index_json, index_md = _write_all_chats_index(out_root, results, meta)
     log(
@@ -3605,6 +3654,10 @@ def export_all_chats(
     transcribe_voices=False,
     db_dir=None,
     limit=None,
+    by_sender=False,
+    sender_filter=None,
+    date_from=None,
+    date_to=None,
 ):
     """Export all reliably identified local private/group conversations."""
     if limit is not None:
@@ -3639,6 +3692,10 @@ def export_all_chats(
                 db_dir=db_dir,
                 workdir=str(workdir),
                 limit=limit,
+                by_sender=by_sender,
+                sender_filter=sender_filter,
+                date_from=date_from,
+                date_to=date_to,
             )
     except BaseException:
         _cleanup_sensitive_workdir(workdir, progress=progress)
@@ -3663,6 +3720,10 @@ def export_chats(
     export_videos=False,
     transcribe_voices=False,
     db_dir=None,
+    by_sender=False,
+    sender_filter=None,
+    date_from=None,
+    date_to=None,
 ):
     """Export several named conversations in one run (Issue #1).
 
@@ -3699,6 +3760,10 @@ def export_chats(
                 transcribe_voices=transcribe_voices,
                 db_dir=db_dir,
                 workdir=str(workdir),
+                by_sender=by_sender,
+                sender_filter=sender_filter,
+                date_from=date_from,
+                date_to=date_to,
             )
     except BaseException:
         _cleanup_sensitive_workdir(workdir, progress=progress)
@@ -3758,6 +3823,10 @@ def export_chat(
     export_videos=False,
     transcribe_voices=False,
     db_dir=None,
+    by_sender=False,
+    sender_filter=None,
+    date_from=None,
+    date_to=None,
 ):
     # 导出前顺便清理本项目上次异常退出留下、且已确认失效的工作目录。
     stale_report = clear_current_sensitive_cache()
@@ -3787,6 +3856,10 @@ def export_chat(
                 transcribe_voices=transcribe_voices,
                 db_dir=db_dir,
                 workdir=str(workdir),
+                by_sender=by_sender,
+                sender_filter=sender_filter,
+                date_from=date_from,
+                date_to=date_to,
             )
     except BaseException:
         # KeyboardInterrupt / SystemExit 也先尽力删除本次敏感工作目录，再原样抛出。
@@ -3800,3 +3873,286 @@ def export_chat(
     result["sensitive_cache_cleanup"] = cleanup_ok
     result["sensitive_cache_cleanup_error"] = cleanup_error
     return result
+
+
+# --- Issue #2: per-sender grouped export (by_sender/) + date range --------
+
+# 按人分组导出的独立常量（不与 Issue #1 的多会话常量共用）。
+BY_SENDER_DIR_NAME = "by_sender"
+BY_SENDER_INDEX_JSON_NAME = "by_sender_index.json"
+BY_SENDER_INDEX_MD_NAME = "by_sender_index.md"
+BY_SENDER_UNKNOWN_LABEL = "未知发送者"
+BY_SENDER_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# --sender 名单分隔符：逗号（半角/全角）、顿号与分号都认，方便中英文输入法。
+SENDER_LIST_SPLIT_RE = re.compile(r"[,，、;；]")
+
+
+def parse_sender_list(raw) -> list[str]:
+    """Split a sender filter list on ',' / '，' / '、' / ';' / '；'.
+
+    Accepts a single string, an iterable of strings, or None (CLI
+    --sender may be repeated, and each value may itself be a list).
+    Items are stripped, empties dropped, duplicates removed preserving
+    first-seen order.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parts = SENDER_LIST_SPLIT_RE.split(raw)
+    else:
+        parts = []
+        for item in raw:
+            parts.extend(SENDER_LIST_SPLIT_RE.split(str(item)))
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        name = part.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def parse_export_date(value, label="日期"):
+    """Validate a YYYY-MM-DD export date bound.
+
+    None / empty string means "no bound" and returns None. Anything else
+    must be a real calendar date in YYYY-MM-DD form; the normalized
+    string is returned (lexicographic order == chronological order).
+    Raises ValueError with a user-facing message otherwise.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if not BY_SENDER_DATE_RE.match(text):
+        raise ValueError(f"{label}格式应为 YYYY-MM-DD，收到：{value}")
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"{label}不是有效的日历日期：{value}") from None
+    return text
+
+
+def _message_date(message: dict):
+    """Calendar date (YYYY-MM-DD) of a parsed message, or None."""
+    text = str(message.get("time") or "")
+    candidate = text[:10]
+    return candidate if BY_SENDER_DATE_RE.match(candidate) else None
+
+
+def group_messages_by_sender(
+    messages,
+    senders=None,
+    date_from=None,
+    date_to=None,
+) -> list[dict]:
+    """Group parsed messages by sender (pure function, no I/O).
+
+    - Messages whose sender could not be resolved (no stable username,
+      or the display label produced by resolve_sender starts with
+      「未知发送者」) are collected into one 「未知发送者」 group and are
+      never dropped silently.
+    - 「我」 follows the existing is_self convention: the group keeps the
+      parsed display label and carries is_self=True.
+    - ``senders`` filters whole groups, matched against the display
+      label or the stable sender_username.
+    - ``date_from`` / ``date_to`` are inclusive YYYY-MM-DD bounds on the
+      message calendar date; messages without a parseable date are
+      excluded while a bound is active.
+    Returns groups sorted by message count desc, then label asc; each
+    group keeps its messages in the original (chronological) order.
+    """
+    start = parse_export_date(date_from, "起始日期")
+    end = parse_export_date(date_to, "结束日期")
+    if start and end and start > end:
+        raise ValueError(f"起始日期 {start} 晚于结束日期 {end}。")
+    wanted = parse_sender_list(senders)
+
+    groups: dict = {}
+    for message in messages:
+        if start or end:
+            day = _message_date(message)
+            if day is None:
+                continue
+            if start and day < start:
+                continue
+            if end and day > end:
+                continue
+        username = message.get("sender_username") or None
+        label = str(message.get("sender") or "").strip()
+        unknown = username is None or label.startswith(BY_SENDER_UNKNOWN_LABEL)
+        if unknown:
+            key = ("unknown",)
+            display = BY_SENDER_UNKNOWN_LABEL
+            group_username = None
+        else:
+            key = ("user", username or label)
+            display = label or username
+            group_username = username
+        group = groups.get(key)
+        if group is None:
+            group = {
+                "sender": display,
+                "sender_username": group_username,
+                "is_self": bool(message.get("is_self")),
+                "unknown": unknown,
+                "messages": [],
+            }
+            groups[key] = group
+        group["messages"].append(message)
+
+    result = []
+    for group in groups.values():
+        if wanted and not (
+            group["sender"] in wanted
+            or (group["sender_username"] and group["sender_username"] in wanted)
+            or (group["unknown"] and BY_SENDER_UNKNOWN_LABEL in wanted)
+        ):
+            continue
+        group["message_count"] = len(group["messages"])
+        group["first_time"] = (
+            group["messages"][0].get("time") if group["messages"] else None
+        )
+        group["last_time"] = (
+            group["messages"][-1].get("time") if group["messages"] else None
+        )
+        result.append(group)
+    result.sort(key=lambda g: (-g["message_count"], g["sender"]))
+    return result
+
+
+def _write_by_sender_index(by_dir: Path, entries: list[dict], meta: dict):
+    json_path = by_dir / BY_SENDER_INDEX_JSON_NAME
+    md_path = by_dir / BY_SENDER_INDEX_MD_NAME
+
+    with json_path.open("w", encoding="utf-8-sig") as f:
+        json.dump(
+            {"exporter_version": APP_VERSION, **meta, "senders": entries},
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    lines = [
+        "# 按人分组导出索引",
+        "",
+        f"- 导出器版本：{APP_VERSION}",
+        f"- 会话：{meta['chat_name']}",
+        f"- 生成时间：{meta['generated_at']}",
+    ]
+    if meta.get("date_from") or meta.get("date_to"):
+        lines.append(
+            f"- 日期范围：{meta.get('date_from') or '不限'} ~ "
+            f"{meta.get('date_to') or '不限'}（含端点）"
+        )
+    if meta.get("sender_filter"):
+        lines.append(f"- 只看这些人：{'、'.join(meta['sender_filter'])}")
+    lines += [
+        f"- 发送者数：{meta['sender_total']}；消息数：{meta['message_total']}",
+        "",
+        "| 发送者 | 账号 | 消息数 | 时间跨度 | 文件 |",
+        "| --- | --- | ---: | --- | --- |",
+    ]
+    for item in entries:
+        label = str(item.get("sender") or "").replace("|", "\\|")
+        account = str(item.get("sender_username") or "—").replace("|", "\\|")
+        span = f"{item.get('first_time') or '—'} ~ {item.get('last_time') or '—'}"
+        href = _markdown_href(item["md_file"])
+        lines.append(
+            f"| {label} | {account} | {item.get('message_count', 0)} "
+            f"| {span} | [{item['md_file']}]({href}) |"
+        )
+    lines.append("")
+
+    with md_path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines))
+    return json_path, md_path
+
+
+def write_by_sender_exports(
+    chat_dir,
+    messages,
+    is_group,
+    target_name,
+    senders=None,
+    date_from=None,
+    date_to=None,
+    progress=None,
+):
+    """Write the by_sender/ companion export for one conversation.
+
+    Produces <chat_dir>/by_sender/<发送者>.md + .txt per sender (same
+    writers and per-day sections as the main export) plus
+    by_sender_index.json / .md. Original export files are untouched.
+    """
+    def log(msg):
+        if progress:
+            progress(msg)
+
+    chat_dir = Path(chat_dir)
+    by_dir = chat_dir / BY_SENDER_DIR_NAME
+    by_dir.mkdir(parents=True, exist_ok=True)
+
+    groups = group_messages_by_sender(
+        messages,
+        senders=senders,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    entries: list[dict] = []
+    used_stems: dict[str, str] = {}
+    for group in groups:
+        stem = safe_folder_name(group["sender"])
+        owner = group["sender_username"] or BY_SENDER_UNKNOWN_LABEL
+        if stem in used_stems and used_stems[stem] != owner:
+            suffix = group["sender_username"] or "unknown"
+            stem = safe_folder_name(f"{stem} [{suffix}]")
+            counter = 2
+            while stem in used_stems and used_stems[stem] != owner:
+                stem = safe_folder_name(f"{group['sender']} [{suffix} {counter}]")
+                counter += 1
+        used_stems[stem] = owner
+
+        heading = f"{target_name} · {group['sender']}"
+        txt_path = by_dir / f"{stem}.txt"
+        md_path = by_dir / f"{stem}.md"
+        _write_txt(group["messages"], txt_path, is_group, heading)
+        _write_markdown(group["messages"], md_path, is_group, heading)
+        entries.append({
+            "sender": group["sender"],
+            "sender_username": group["sender_username"],
+            "is_self": group["is_self"],
+            "unknown": group["unknown"],
+            "message_count": group["message_count"],
+            "first_time": group["first_time"],
+            "last_time": group["last_time"],
+            "txt_file": txt_path.name,
+            "md_file": md_path.name,
+        })
+        log(
+            f"按人分组：{group['sender']} {group['message_count']} 条"
+            f" → {BY_SENDER_DIR_NAME}/{stem}.md"
+        )
+
+    meta = {
+        "chat_name": target_name,
+        "chat_type": "group" if is_group else "private",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sender_filter": parse_sender_list(senders),
+        "date_from": parse_export_date(date_from, "起始日期"),
+        "date_to": parse_export_date(date_to, "结束日期"),
+        "sender_total": len(entries),
+        "message_total": sum(item["message_count"] for item in entries),
+    }
+    index_json, index_md = _write_by_sender_index(by_dir, entries, meta)
+    return {
+        **meta,
+        "dir": str(by_dir.resolve()),
+        "index_json": str(index_json.resolve()),
+        "index_md": str(index_md.resolve()),
+        "senders": entries,
+    }
